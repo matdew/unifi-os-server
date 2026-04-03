@@ -57,7 +57,51 @@ fi
 
 # Initialize mongodb lib dirs
 MONGODB_LIB_DIR="/var/lib/mongodb"
-chown -R mongodb:mongodb "$MONGODB_LIB_DIR"
+if [ -z "${MONGO_HOST+1}" ]; then
+    chown -R mongodb:mongodb "$MONGODB_LIB_DIR"
+fi
+
+# External MongoDB support
+# Set MONGO_HOST to redirect localhost:27017 to an external MongoDB container.
+# When unset, internal MongoDB runs normally via systemd (default behavior).
+if [ -n "${MONGO_HOST+1}" ]; then
+    echo "MONGO_HOST is set to '$MONGO_HOST'. Configuring external MongoDB..."
+
+    # 1. Mask the internal MongoDB systemd service so it never starts.
+    #    Replicates what 'systemctl mask' does: symlink service file to /dev/null.
+    mkdir -p /etc/systemd/system
+    ln -sf /dev/null /etc/systemd/system/mongodb.service
+    echo "Masked mongodb.service (symlinked to /dev/null)"
+
+    # 2. Wait for external MongoDB to be reachable before starting systemd.
+    MONGO_WAIT_TIMEOUT=${MONGO_WAIT_TIMEOUT:-120}
+    MONGO_WAIT_INTERVAL=2
+    elapsed=0
+    echo "Waiting for MongoDB at ${MONGO_HOST}:27017 (timeout: ${MONGO_WAIT_TIMEOUT}s)..."
+    until bash -c ">/dev/tcp/${MONGO_HOST}/27017" 2>/dev/null; do
+        if [ "$elapsed" -ge "$MONGO_WAIT_TIMEOUT" ]; then
+            echo "ERROR: Timed out waiting for MongoDB at ${MONGO_HOST}:27017 after ${MONGO_WAIT_TIMEOUT}s. Aborting."
+            exit 1
+        fi
+        sleep "$MONGO_WAIT_INTERVAL"
+        elapsed=$((elapsed + MONGO_WAIT_INTERVAL))
+    done
+    echo "MongoDB is reachable at ${MONGO_HOST}:27017"
+
+    # 3. Redirect localhost:27017 to the external MongoDB host using iptables NAT.
+    #    OUTPUT chain covers connections initiated within this container.
+    #    POSTROUTING MASQUERADE ensures the source IP is valid for return traffic.
+    #    Both rules must run before systemd starts UniFi services.
+    iptables -t nat -A OUTPUT \
+        -d 127.0.0.1 -p tcp --dport 27017 \
+        -j DNAT --to-destination "${MONGO_HOST}:27017"
+    iptables -t nat -A POSTROUTING \
+        -d "${MONGO_HOST}" -p tcp --dport 27017 \
+        -j MASQUERADE
+    echo "iptables NAT rule installed: localhost:27017 -> ${MONGO_HOST}:27017"
+
+    echo "External MongoDB configuration complete."
+fi
 
 # Initialize rabbitmq log dirs
 RABBITMQ_LOG_DIR="/var/log/rabbitmq"

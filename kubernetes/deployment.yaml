@@ -16,12 +16,29 @@ spec:
       labels:
         app: unifi-os-server
     spec:
+      initContainers:
+      - name: wait-for-mongodb
+        image: busybox:1.36
+        command:
+        - sh
+        - -c
+        - |
+          echo "Waiting for MongoDB at mongodb-svc:27017..."
+          until nc -z mongodb-svc 27017; do
+            echo "MongoDB not ready, retrying in 3s..."
+            sleep 3
+          done
+          echo "MongoDB is ready."
       containers:
       - name: unifi-os-server
         image: ghcr.io/lemker/unifi-os-server:latest
         env:
         - name: UOS_SYSTEM_IP
           value: "unifi.example.com"
+        - name: MONGO_HOST
+          value: "mongodb-svc"
+        # - name: MONGO_WAIT_TIMEOUT
+        #   value: "120"
         securityContext:
           privileged: true
         volumeMounts:
@@ -40,9 +57,7 @@ spec:
         - name: unifi-os-server-data
           mountPath: /var/lib/unifi
           subPath: unifi
-        - name: unifi-os-server-data
-          mountPath: /var/lib/mongodb
-          subPath: mongodb
+        # mongodb subPath removed: MongoDB now runs in its own StatefulSet
         - name: unifi-os-server-data
           mountPath: /etc/rabbitmq/ssl
           subPath: rabbitmq
@@ -50,7 +65,7 @@ spec:
           httpGet:
             path: /api/ping
             port: 80
-          initialDelaySeconds: 10          
+          initialDelaySeconds: 10
           periodSeconds: 60
           timeoutSeconds: 5
           successThreshold: 1
@@ -59,3 +74,50 @@ spec:
       - name: unifi-os-server-data
         persistentVolumeClaim:
           claimName: unifi-os-server-pvc
+
+---
+apiVersion: apps/v1
+kind: StatefulSet
+metadata:
+  name: mongodb
+  namespace: unifi
+  labels:
+    app: mongodb
+spec:
+  serviceName: mongodb-svc
+  replicas: 1
+  selector:
+    matchLabels:
+      app: mongodb
+  template:
+    metadata:
+      labels:
+        app: mongodb
+    spec:
+      containers:
+      - name: mongodb
+        image: mongo:7.0
+        ports:
+        - containerPort: 27017
+          name: mongo
+        volumeMounts:
+        - name: mongodb-data
+          mountPath: /data/db
+        livenessProbe:
+          exec:
+            command: ["mongosh", "--quiet", "--eval", "db.adminCommand('ping').ok"]
+          initialDelaySeconds: 30
+          periodSeconds: 30
+          timeoutSeconds: 10
+          failureThreshold: 3
+        readinessProbe:
+          exec:
+            command: ["mongosh", "--quiet", "--eval", "db.adminCommand('ping').ok"]
+          initialDelaySeconds: 10
+          periodSeconds: 10
+          timeoutSeconds: 5
+          failureThreshold: 3
+      volumes:
+      - name: mongodb-data
+        persistentVolumeClaim:
+          claimName: mongodb-pvc
