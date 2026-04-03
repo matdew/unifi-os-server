@@ -1,6 +1,6 @@
 FROM ghcr.io/lemker/uosserver:0.0.54-multiarch
 
-LABEL org.opencontainers.image.source="https://github.com/lemker/unifi-os-server"
+LABEL org.opencontainers.image.source="https://github.com/matdew/unifi-os-server"
 
 ENV UOS_SERVER_VERSION="5.0.6"
 
